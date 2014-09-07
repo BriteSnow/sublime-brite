@@ -4,8 +4,8 @@ import sublime, sublime_plugin
 COMMAND_LABELS = [["New view asset(s)","Create the new britejs view .js, .less, .tmpl assets or the missing one(s)"],
 								 ["List views","List all britejs views"]]
 
-COMMAND_IDX_NAMES = {0:"brite_new_view",
-										 1:"brite_list_views"}
+COMMANDS = [{"cmd":"brite_new_view"},
+						{"cmd":"brite_list_views"}]
 
 VIEW_DIRS = set(["js","tmpl","less"])
 
@@ -13,14 +13,16 @@ SNIPPETS = {"js":"Packages/Brite/brite-view-js.sublime-snippet",
 						"tmpl":"Packages/Brite/brite-view-tmpl.sublime-snippet",
 						"less":"Packages/Brite/brite-view-less.sublime-snippet"}
 
-OPENING_ORDER = ["less","js","tmpl"]						
+OPENING_ORDER = ["less","js","tmpl"]
+
+DISPLAY_ORDER = ["js","tmpl","less"]						
 
 # --------- CMD: brite HOME --------- #
 class BriteCommand(sublime_plugin.WindowCommand):
 	def run(self):
-		# by default, we take the static commands
-		self.cmdLabels = COMMAND_LABELS
-		self.cmdIdx = COMMAND_IDX_NAMES
+		# by default, we copy the static commands
+		self.cmdLabels = [] + COMMAND_LABELS
+		self.cmds = [] + COMMANDS
 
 		# check if the activeView is a brite.js view for additional commands
 		activeView = self.window.active_view()
@@ -28,17 +30,34 @@ class BriteCommand(sublime_plugin.WindowCommand):
 		viewName = os.path.splitext(os.path.basename(viewFile))[0]
 		if viewName[0].isupper():
 			baseDir = find_view_base_dir(viewFile)
-			viewInfo = build_view_info(baseDir,viewName)
-			# TODO: Needs to complete
+			viewInfo = build_view_info(baseDir,viewName,self.window)
+
+			# We offer to open the remaining files
+			unopenedTypes = viewInfo['unopenedTypes'];
+			if (len(unopenedTypes) > 0):
+				label = ["Open other " + viewName + " assets"];
+				# label.append("Openning " + ", ".join(map(lambda t: viewName + "." + t,unopenedTypes)))
+				label.append("Opening " + display_assets(viewName,unopenedTypes))
+				self.cmdLabels.append(label)
+				self.cmds.append({"cmd":"brite_open_unopened","args":{"viewInfo":viewInfo}})
+
+			absentTypes = viewInfo['absentTypes']
+			if (len(absentTypes) > 0):
+				label = ["Create missing " + viewName + " assets"];
+				label.append("Creating " + display_assets(viewName,absentTypes))
+				self.cmdLabels.append(label)
+				self.cmds.append({"cmd":"brite_create_absents","args":{"viewInfo":viewInfo}})				
 
 		self.window.show_quick_panel(self.cmdLabels,self.on_brite_done)
 
 	def on_brite_done(self, idx):
 		if idx >= 0:
-			cmd = self.cmdIdx[idx]
-			self.window.run_command(cmd)
+			cmd = self.cmds[idx]['cmd']
+			args = self.cmds[idx].get('args')
+			self.window.run_command(cmd,args)
 # --------- /CMD: brite HOME --------- #
 
+# --------- CMD: brite_run_snippet --------- #
 class BriteRunSnippet(sublime_plugin.TextCommand):
 	def run(self, edit, **args):
 		print(self.view,args)
@@ -50,6 +69,7 @@ class BriteRunSnippet(sublime_plugin.TextCommand):
 			self.view.run_command("insert", {"characters": viewName})
 			self.view.run_command("next_field")
 		sublime.set_timeout(snip,10)
+# --------- /CMD: brite_run_snippet --------- #
 		
 # --------- CMD: brite_new_view --------- #
 class BriteNewViewCommand(sublime_plugin.WindowCommand):
@@ -64,35 +84,21 @@ class BriteNewViewCommand(sublime_plugin.WindowCommand):
 		activeView.erase_status("britemsg")
 		viewFile = activeView.file_name()
 		baseDir = find_view_base_dir(viewFile)
-		viewInfo = build_view_info(baseDir,viewName)
-		viewInfoItems = viewInfo["items"]
-		itemsToCreate = viewInfo["absentItems"]
-		itemsToIgnore = viewInfo["existingItems"]
+		viewInfo = build_view_info(baseDir,viewName,self.window)
 
-		if len(itemsToIgnore) > 0:
-			msg = ", ".join(map(lambda item: viewName + "." + item["type"],itemsToIgnore))
+		typesToIgnore = viewInfo["existingTypes"]
+		if len(typesToIgnore) > 0:
+			msg = ", ".join(map(lambda t: viewName + "." + t,typesToIgnore))
 			msg += " files already exist, ignoring them." 
 			sublime.status_message(msg)
 
-		if len(itemsToCreate) > 0:
-			multiGroup = self.window.num_groups() > 1
-			for itemType in OPENING_ORDER: 
-				item = viewInfoItems[itemType]
-				if item['exists'] == False:
-					f = item["file"]
-					itemType = item["type"]
-					v = self.window.open_file(f)
-					args = {"viewName":viewName,
-									"itemType":itemType}
-					v.run_command("brite_run_snippet",args)
-					if multiGroup & (itemType == "tmpl"):
-						self.window.set_view_index(v, 1,0)
+		create_view_items(viewInfo,self.window)
 
 	def on_name_input_change(self,viewName):
 		activeView = self.window.active_view()
 		viewFile = activeView.file_name()
 		baseDir = find_view_base_dir(viewFile)
-		viewInfo = build_view_info(baseDir,viewName)
+		viewInfo = build_view_info(baseDir,viewName,self.window)
 		msg = "Will create: "
 		msg += ", ".join(map(lambda i: i["shortFileName"],viewInfo["absentItems"]))
 		existingItems = viewInfo["existingItems"]
@@ -106,7 +112,6 @@ class BriteNewViewCommand(sublime_plugin.WindowCommand):
 # --------- /CMD: brite_new_view --------- #
 		
 
-
 # --------- CMD: brite_list_views --------- #
 class BriteListViewsCommand(sublime_plugin.WindowCommand):
 	def run(self):
@@ -117,8 +122,8 @@ class BriteListViewsCommand(sublime_plugin.WindowCommand):
 
 		def viewListItemFromViewInfo(viewInfo):
 			viewListItem = []
-			viewListItem.append(viewInfo["name"])
-			viewListItem.append(", ".join(map(lambda i: i['shortFileName'],viewInfo['existingItems'])))
+			viewListItem.append(viewInfo['name'])
+			viewListItem.append(" | ".join(map(lambda t: t.upper(), viewInfo['existingTypes'])))
 			return viewListItem
 		
 		viewList = list(map(viewListItemFromViewInfo,self.viewInfoList ))
@@ -128,57 +133,138 @@ class BriteListViewsCommand(sublime_plugin.WindowCommand):
 	def on_list_views_done(self,idx):
 		if idx > -1:
 			viewInfo = self.viewInfoList[idx]
-			multiGroup = self.window.num_groups() > 1
-			for itemType in OPENING_ORDER:
-				item = viewInfo['items'][itemType]
-				if item['exists']:
-					v = self.window.open_file(item['file'])
-					if multiGroup & (item['type'] == "tmpl"):
-						self.window.set_view_index(v, 1,0)
+			open_view_items(viewInfo,self.window)
 
 	# Return a [{viewInfo}]
 	def list_viewInfo(self,baseDir):
-		jsViews = self.fill_set(os.path.join(baseDir,"js/"),set())
-		jsViews = sorted(jsViews)
+		jsViews = self.get_viewnames_set(os.path.join(baseDir,"js/"))
 		viewInfoList = []
 		for name in jsViews:
-			viewInfo = build_view_info(baseDir,name)
+			viewInfo = build_view_info(baseDir,name,self.window)
 			viewInfoList.append(viewInfo)
 		return viewInfoList
 
-	def fill_set(self,assetDir,viewSet):
+	def get_viewnames_set(self,assetDir):
+		viewNames = set()
 		for name in os.listdir(assetDir):
 			if name[0].isupper():
-				viewSet.add(os.path.splitext(name)[0])
-		return viewSet
-
+				viewNames.add(os.path.splitext(name)[0])
+		viewNames = sorted(viewNames)
+		return viewNames
 # --------- /CMD: brite_list_views --------- #
 
-# --------- Module Functions: find viewInfo --------- #
+# --------- CMD: brite_create_absents --------- #
+class BriteCreateAbsentsCommand(sublime_plugin.WindowCommand):
+	def run(self, **args):
+		viewInfo = args['viewInfo']
+		create_view_items(viewInfo,self.window)
 
-def build_view_info(baseDir,viewName):
+# --------- /CMD: brite_create_absents --------- #
+
+# --------- CMD: brite_open_unopened --------- #
+# Command that open the unopened assets for a give viewInfo
+class BriteOpenUnopened(sublime_plugin.WindowCommand):
+	def run(self, **args):
+		viewInfo = args['viewInfo']
+		open_view_items(viewInfo,self.window,True)
+
+# --------- /CMD: brite_open_unopened --------- #
+
+# --------- Utils: display --------- #
+def display_assets(viewName,types,withPath = False):
+	txts = []
+	typeSet = set(types)
+	for t in DISPLAY_ORDER:
+		if t in typeSet:
+			txt = t + "/" if withPath else ""
+			txt += viewName + "." + t
+			txts.append(txt)
+	return ", ".join(txts)
+
+# --------- /Utils: display --------- #
+
+# --------- Utils: open & create view assets --------- #
+def open_view_items(viewInfo,window,onlyUnopened = False):
+	multiGroup = window.num_groups() > 1
+	for itemType in OPENING_ORDER:
+		item = viewInfo['items'][itemType]
+		if item['exists'] & (onlyUnopened & item['opened'] == False):
+			v = window.open_file(item['file'])
+			if multiGroup & (item['type'] == "tmpl"):
+				window.set_view_index(v, 1,0)
+
+def create_view_items(viewInfo,window):
+	multiGroup = window.num_groups() > 1
+	viewInfoItems = viewInfo['items']
+	viewName = viewInfo['name']
+
+	for itemType in OPENING_ORDER: 
+		item = viewInfoItems[itemType]
+		if item['exists'] == False:
+			f = item["file"]
+			itemType = item["type"]
+			v = window.open_file(f)
+			args = {"viewName":viewName,
+							"itemType":itemType}
+			v.run_command("brite_run_snippet",args)
+			if multiGroup & (itemType == "tmpl"):
+				window.set_view_index(v, 1,0)	
+# --------- /Utils: open & create view assets --------- #
+
+# --------- Utils: find viewInfo --------- #
+def build_view_info(baseDir,viewName, window):
 	fileDic = {}
 	fileDic['less'] = os.path.join(baseDir,"less/",viewName + ".less")
 	fileDic['js'] = os.path.join(baseDir,"js/",viewName + ".js")
 	fileDic['tmpl'] = os.path.join(baseDir,"tmpl/",viewName + ".tmpl")
-	viewInfo = {"name":viewName,"items":{},"existingItems":[],"absentItems":[]}
+	viewInfo = {"name":viewName,
+							"items":{},
+							"existingItems":[],
+							"absentItems":[],
+							"existingTypes": [],
+							"absentTypes": [],
+							"openedTypes":[],
+							"unopenedTypes": []}
 	for itemType in fileDic:
 		item = {"type":itemType}
-		item["file"] = fileDic[itemType]
-		item["shortFileName"] = itemType + "/" + viewName + "." + itemType
+		item['file'] = fileDic[itemType]
+		item['shortFileName'] = itemType + "/" + viewName + "." + itemType
 		exists = os.path.exists(fileDic[itemType])
-		item["exists"] = exists
+		item['exists'] = exists
 		if exists:
-			viewInfo["existingItems"].append(item)
+			viewInfo['existingItems'].append(item)
+			viewInfo['existingTypes'].append(itemType)
 		else:
-			viewInfo["absentItems"].append(item)			
-		viewInfo["items"][itemType] = item
+			viewInfo['absentItems'].append(item)
+			viewInfo['absentTypes'].append(itemType)
+		isopen = (window.find_open_file(item['file']) != None)
+		item['opened'] = isopen	
+		if isopen:
+			viewInfo['openedTypes'].append(itemType)
+		else:
+			if exists:
+				viewInfo['unopenedTypes'].append(itemType)
+		viewInfo['items'][itemType] = item
 
+	viewInfo['existingTypes'] = sort_types_for_display(viewInfo['existingTypes'])
+	viewInfo['absentTypes'] = sort_types_for_display(viewInfo['absentTypes'])
+	viewInfo['openedTypes'] = sort_types_for_display(viewInfo['openedTypes'])	
+	viewInfo['unopenedTypes'] = sort_types_for_display(viewInfo['unopenedTypes'])	
 	return viewInfo
 
-# --------- /Module Functions: find views --------- #
+def sort_types_for_display(types):
+	ntypes = []
+	print("types",types)
+	s = set(types)
+	for t in DISPLAY_ORDER:
+		if t in s:
+			ntypes.append(t)
+	return ntypes
 
-# --------- Module Functions: find view base dir --------- #
+
+# --------- /Utils: find views --------- #
+
+# --------- Utils: find view base dir --------- #
 def find_view_base_dir(viewFile):
 	dir = get_dir(viewFile);
 	baseDir = get_base_dir(dir);
@@ -207,7 +293,7 @@ def get_dir(file):
 		return os.path.dirname(file)
 	else:
 		return file
-# --------- /Module Functions: find view base dir --------- #
+# --------- /Utils: find view base dir --------- #
 
 
 
