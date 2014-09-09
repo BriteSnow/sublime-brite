@@ -60,7 +60,6 @@ class BriteCommand(sublime_plugin.WindowCommand):
 # --------- CMD: brite_run_snippet --------- #
 class BriteRunSnippet(sublime_plugin.TextCommand):
 	def run(self, edit, **args):
-		print(self.view,args)
 		viewName = args["viewName"]
 		itemType = args["itemType"]
 		snippet = SNIPPETS[itemType]
@@ -77,7 +76,6 @@ class BriteNewViewCommand(sublime_plugin.WindowCommand):
 		v = self.window.show_input_panel("Enter ViewName:","",self.on_name_input_done,
 																			self.on_name_input_change,
 																			self.on_name_input_cancel)
-		print(v,v.name())
 
 	def on_name_input_done(self,viewName):
 		activeView = self.window.active_view()
@@ -254,7 +252,6 @@ def build_view_info(baseDir,viewName, window):
 
 def sort_types_for_display(types):
 	ntypes = []
-	print("types",types)
 	s = set(types)
 	for t in DISPLAY_ORDER:
 		if t in s:
